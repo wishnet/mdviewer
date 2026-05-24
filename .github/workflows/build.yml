@@ -1,0 +1,31 @@
+name: Build EXE
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller pywebview
+          pip install markdown pymdown-extensions Pygments
+
+      - name: Build EXE
+        run: |
+          pyinstaller --onefile --noconsole --icon=icon.ico --hidden-import webview --hidden-import webview.platforms.edgechromium --hidden-import json --hidden-import threading --collect-all webview --name MDViewer mdviewer.py
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/MDViewer.exe
