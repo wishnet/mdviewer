@@ -1301,7 +1301,7 @@ def main():
         target = Path(sys.argv[1]).resolve()
         if target.is_dir():
             ROOT_DIR = target
-        elif target.is_file() and target.suffix.lower() == ".md":
+        elif target.is_file() and _is_text_file(target.name):
             ROOT_DIR = target.parent
             initial_file = target.name
         elif target.is_file():
