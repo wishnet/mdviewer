@@ -40,17 +40,31 @@ def _esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# Precompiled regex for _inline_format (called per line, many times)
+_RE_IMG = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+_RE_LINK = re.compile(r'\[([^\]]*)\]\(([^)]+)\)')
+_RE_BOLD1 = re.compile(r'\*\*(.+?)\*\*')
+_RE_BOLD2 = re.compile(r'__(.+?)__')
+_RE_ITALIC1 = re.compile(r'\*(.+?)\*')
+_RE_ITALIC2 = re.compile(r'_(.+?)_')
+_RE_CODE = re.compile(r'`([^`]+)`')
+_RE_DEL = re.compile(r'~~(.+?)~~')
+
+
 def _inline_format(text: str) -> str:
     t = _esc(text)
-    t = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', r'<img src="\2" alt="\1">', t)
-    t = re.sub(r'\[([^\]]*)\]\(([^)]+)\)', r'<a href="\2">\1</a>', t)
-    t = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', t)
-    t = re.sub(r'__(.+?)__', r'<strong>\1</strong>', t)
-    t = re.sub(r'\*(.+?)\*', r'<em>\1</em>', t)
-    t = re.sub(r'_(.+?)_', r'<em>\1</em>', t)
-    t = re.sub(r'`([^`]+)`', r'<code>\1</code>', t)
-    t = re.sub(r'~~(.+?)~~', r'<del>\1</del>', t)
+    t = _RE_IMG.sub(r'<img src="\2" alt="\1">', t)
+    t = _RE_LINK.sub(r'<a href="\2">\1</a>', t)
+    t = _RE_BOLD1.sub(r'<strong>\1</strong>', t)
+    t = _RE_BOLD2.sub(r'<strong>\1</strong>', t)
+    t = _RE_ITALIC1.sub(r'<em>\1</em>', t)
+    t = _RE_ITALIC2.sub(r'<em>\1</em>', t)
+    t = _RE_CODE.sub(r'<code>\1</code>', t)
+    t = _RE_DEL.sub(r'<del>\1</del>', t)
     return t
+
+
+_RE_SEPARATOR = re.compile(r'^[-:]+$')
 
 
 def _render_table(rows: list) -> str:
@@ -60,7 +74,7 @@ def _render_table(rows: list) -> str:
     for r in rows:
         cells = [c.strip() for c in r.strip().split('|')]
         cells = [c for c in cells if c]
-        if all(re.match(r'^[-:]+$', c) for c in cells):
+        if all(_RE_SEPARATOR.match(c) for c in cells):
             continue
         data_rows.append(cells)
     if not data_rows:
@@ -79,6 +93,16 @@ def _render_table(rows: list) -> str:
         html.append('</tbody>')
     html.append('</table>')
     return '\n'.join(html)
+
+
+# Precompiled regex for md_to_html
+_RE_HEADING = re.compile(r'^(#{1,6})\s+(.+)$')
+_RE_HR = re.compile(r'^[-*_]{3,}\s*$')
+_RE_UL = re.compile(r'^(\s*)[-*+]\s+(.+)$')
+_RE_OL = re.compile(r'^(\s*)\d+\.\s+(.+)$')
+_RE_HEADING_ID = re.compile(r'[^a-z0-9\u4e00-\u9fff]+')
+_RE_TASK_UNCHECKED = re.compile(r'<li>\[ \] (.*?)</li>')
+_RE_TASK_CHECKED = re.compile(r'<li>\[x\] (.*?)</li>', re.IGNORECASE)
 
 
 def md_to_html(text: str) -> str:
@@ -123,15 +147,15 @@ def md_to_html(text: str) -> str:
             in_table = False
             table_rows = []
 
-        m = re.match(r'^(#{1,6})\s+(.+)$', line)
+        m = _RE_HEADING.match(line)
         if m:
             level = len(m.group(1))
-            id_attr = re.sub(r'[^a-z0-9\u4e00-\u9fff]+', '-', m.group(2).lower()).strip('-')
+            id_attr = _RE_HEADING_ID.sub('-', m.group(2).lower()).strip('-')
             out.append(f'<h{level} id="{id_attr}">{m.group(2)}</h{level}>')
             i += 1
             continue
 
-        if re.match(r'^[-*_]{3,}\s*$', line.strip()):
+        if _RE_HR.match(line.strip()):
             out.append('<hr>')
             i += 1
             continue
@@ -141,7 +165,7 @@ def md_to_html(text: str) -> str:
             i += 1
             continue
 
-        m = re.match(r'^(\s*)[-*+]\s+(.+)$', line)
+        m = _RE_UL.match(line)
         if m:
             if not in_list or list_tag != 'ul':
                 if in_list:
@@ -153,7 +177,7 @@ def md_to_html(text: str) -> str:
             i += 1
             continue
 
-        m = re.match(r'^(\s*)\d+\.\s+(.+)$', line)
+        m = _RE_OL.match(line)
         if m:
             if not in_list or list_tag != 'ol':
                 if in_list:
@@ -186,31 +210,28 @@ def md_to_html(text: str) -> str:
         out.append(f'</{list_tag}>')
 
     html = '\n'.join(out)
-    html = re.sub(r'<li>\[ \] (.*?)</li>', r'<li><input type="checkbox" disabled> \1</li>', html)
-    html = re.sub(r'<li>\[x\] (.*?)</li>', r'<li><input type="checkbox" checked disabled> \1</li>', html, flags=re.IGNORECASE)
+    html = _RE_TASK_UNCHECKED.sub(r'<li><input type="checkbox" disabled> \1</li>', html)
+    html = _RE_TASK_CHECKED.sub(r'<li><input type="checkbox" checked disabled> \1</li>', html)
     return html
 
 
-def _detect_encoding(filepath: Path) -> str:
-    """检测文件编码，返回可用于 decode 的编码名"""
-    raw = filepath.read_bytes()
+def _detect_encoding(raw: bytes) -> str:
     if not raw:
         return "utf-8"
-    # 1) UTF-8 BOM
+    # 1) BOM detection (fast)
     if raw.startswith(b'\xef\xbb\xbf'):
         return "utf-8-sig"
-    # 2) UTF-16 LE/BE BOM
     if raw.startswith(b'\xff\xfe'):
         return "utf-16-le"
     if raw.startswith(b'\xfe\xff'):
         return "utf-16-be"
-    # 3) 尝试 UTF-8 严格解码
+    # 2) Try UTF-8
     try:
         raw.decode("utf-8")
         return "utf-8"
     except UnicodeDecodeError:
         pass
-    # 4) 尝试 chardet
+    # 3) Try chardet
     try:
         import chardet
         result = chardet.detect(raw)
@@ -223,21 +244,20 @@ def _detect_encoding(filepath: Path) -> str:
             return enc
     except ImportError:
         pass
-    # 5) 尝试常见中文编码
+    # 4) Try common encodings
     for enc in ("gbk", "gb18030", "gb2312", "big5", "shift_jis", "euc-kr"):
         try:
             raw.decode(enc)
             return enc
         except (UnicodeDecodeError, LookupError):
             continue
-    # 6) 兜底
     return "latin-1"
 
 
 def render_file(path: Path) -> str:
-    """渲染文件为 HTML body（.md 用 Markdown，其他用纯文本）"""
-    encoding = _detect_encoding(path)
-    text = path.read_text(encoding=encoding, errors="replace")
+    raw = path.read_bytes()
+    encoding = _detect_encoding(raw)
+    text = raw.decode(encoding, errors="replace")
 
     if path.suffix.lower() == ".md":
         try:
@@ -265,14 +285,17 @@ def render_file(path: Path) -> str:
         return f'<pre><code{lang_attr}>{escaped}</code></pre>'
 
 
+def _format_size(size: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024:
+            return f"{size:.0f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
 def get_file_size(path: Path) -> str:
     try:
-        size = path.stat().st_size
-        for unit in ("B", "KB", "MB", "GB"):
-            if size < 1024:
-                return f"{size:.0f} {unit}"
-            size /= 1024
-        return f"{size:.1f} TB"
+        return _format_size(path.stat().st_size)
     except OSError:
         return ""
 
@@ -335,7 +358,7 @@ def build_tree(dir_path: Path) -> list:
                 sz = 0
             items.append({
                 "name": entry.name, "type": "file",
-                "size": sz, "size_human": get_file_size(entry),
+                "size": sz, "size_human": _format_size(sz),
                 "is_md": entry.suffix.lower() == ".md",
             })
     return items
@@ -376,7 +399,10 @@ class MdApi:
 
     def open_external_file(self, filepath: str) -> dict:
         """打开指定路径的文件（拖放或命令行传入）"""
-        return self._open_and_render(Path(filepath))
+        p = Path(filepath)
+        if not p.is_absolute():
+            p = (ROOT_DIR / filepath).resolve()
+        return self._open_and_render(p)
 
     def _open_and_render(self, filepath: Path) -> dict:
         global ROOT_DIR
@@ -726,6 +752,7 @@ body {
 <script>
 let currentFilePath = null;
 let currentTreeDir = '';
+let outlineObserver = null;
 
 // ── 检测 API 模式 ──
 const hasNativeApi = !!(window.pywebview && window.pywebview.api);
@@ -760,11 +787,13 @@ async function loadTree(dirPath) {
         data = await api('/tree', [{dir: dirPath || ''}]);
     }
     document.getElementById('root-label').textContent = data.root;
-    renderTree(document.getElementById('file-tree'), data.children, dirPath || '');
+    renderTree(document.getElementById('file-tree'), data.children, data.dir === '.' ? '' : data.dir, data.root);
     highlightActiveDrive();
 }
 
 // ── 加载盘符列表 ──
+var cachedDriveElements = null;
+
 async function loadDrives() {
     var drives;
     if (hasNativeApi) {
@@ -775,25 +804,29 @@ async function loadDrives() {
         drives = d.drives;
     }
     var bar = document.getElementById('drives-bar');
-    bar.innerHTML = '';
+    var html = '';
     drives.forEach(function(drv) {
-        var el = document.createElement('span');
-        el.className = 'drive-item';
-        el.textContent = '💿 ' + drv.name;
-        el.dataset.drivePath = drv.path;
-        el.title = '切换到 ' + drv.path;
-        el.onclick = function() { switchDrive(drv.path, drv.name); };
-        bar.appendChild(el);
+        html += '<span class="drive-item" data-drive-path="' + escAttr(drv.path) + '" ' +
+                'title="切换到 ' + escAttr(drv.path) + '">💿 ' +
+                escHtml(drv.name) + '</span>';
     });
+    bar.innerHTML = html;
+    cachedDriveElements = null;
     highlightActiveDrive();
 }
+
+// 盘符点击事件委托
+document.getElementById('drives-bar').addEventListener('click', function(e) {
+    var el = e.target.closest('.drive-item');
+    if (!el) return;
+    switchDrive(el.dataset.drivePath, el.textContent.replace('💿 ', ''));
+});
 
 async function switchDrive(drivePath, driveName) {
     if (hasNativeApi) {
         await window.pywebview.api.change_root(drivePath);
         await loadTree('');
     } else {
-        // 浏览器模式：重新请求 tree API（服务器需更新 ROOT_DIR）
         var r = await fetch('/api/change_root', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -801,8 +834,8 @@ async function switchDrive(drivePath, driveName) {
         });
         var data = await r.json();
         if (data.error) { alert(data.error); return; }
-        document.getElementById('root-label').textContent = drivePath;
-        renderTree(document.getElementById('file-tree'), data.children, '');
+        document.getElementById('root-label').textContent = data.root;
+        renderTree(document.getElementById('file-tree'), data.children, '', data.root);
         currentTreeDir = '';
     }
     highlightActiveDrive();
@@ -810,64 +843,110 @@ async function switchDrive(drivePath, driveName) {
 
 function highlightActiveDrive() {
     var currentRoot = document.getElementById('root-label').textContent;
-    document.querySelectorAll('.drive-item').forEach(function(el) {
+    if (!cachedDriveElements) {
+        cachedDriveElements = document.querySelectorAll('.drive-item');
+    }
+    cachedDriveElements.forEach(function(el) {
         el.classList.toggle('active', currentRoot.startsWith(el.dataset.drivePath));
     });
 }
 
 // ── 渲染树节点（单层：.. + 目录 + 文件）──
-function renderTree(container, children, currentDir) {
-    container.innerHTML = '';
+function renderTree(container, children, currentDir, rootDir) {
+    var html = '';
+    rootDir = rootDir ? rootDir.replace(/\\/g, '/') : '';
 
-    // ".." 返回上级（非根目录时显示）
+    // ".." 返回上级（非根目录时切换到上级目录，根目录时切换到父目录）
     if (currentDir) {
-        var upNode = document.createElement('div');
-        upNode.className = 'tree-item up-dir';
-        upNode.innerHTML = '<span class="icon">📂</span><span class="name">.. （返回上级）</span>';
-        upNode.onclick = function() {
-            var parts = currentDir.split('/');
-            parts.pop();
-            loadTree(parts.join('/'));
-        };
-        container.appendChild(upNode);
+        html += '<div class="tree-item up-dir" data-nav="up" data-dir="' +
+                escAttr(currentDir) + '">' +
+                '<span class="icon">📂</span><span class="name">.. （返回上级）</span></div>';
+    } else if (rootDir) {
+        html += '<div class="tree-item up-dir" data-nav="up-root" data-dir="' +
+                escAttr(rootDir) + '">' +
+                '<span class="icon">📂</span><span class="name">.. （返回上级）</span></div>';
     }
 
     if (!children || children.length === 0) {
-        var empty = document.createElement('div');
-        empty.className = 'empty-tree';
-        empty.textContent = '📭 目录为空';
-        container.appendChild(empty);
+        html += '<div class="empty-tree">📭 目录为空</div>';
+        container.innerHTML = html;
         return;
     }
 
     for (var idx = 0; idx < children.length; idx++) {
         var item = children[idx];
-        var itemPath = currentDir ? currentDir + '/' + item.name : item.name;
+        var relPath = currentDir ? currentDir + '/' + item.name : item.name;
 
         if (item.type === 'dir') {
-            var node = document.createElement('div');
-            node.className = 'tree-item folder';
-            node.innerHTML = '<span class="icon">📁</span><span class="name">' + escHtml(item.name) + '</span>';
-            (function(p) {
-                node.onclick = function() { loadTree(p); };
-            })(itemPath);
-            container.appendChild(node);
+            html += '<div class="tree-item folder" data-nav="dir" data-path="' +
+                    escAttr(relPath) + '">' +
+                    '<span class="icon">📁</span><span class="name">' +
+                    escHtml(item.name) + '</span></div>';
         } else if (item.type === 'file') {
-            var icon = item.is_md ? '📄' : '📄';
-            var node = document.createElement('div');
-            node.className = 'tree-item file-item';
-            node.dataset.path = itemPath;
-            node.innerHTML = '<span class="icon">' + icon + '</span><span class="name">' + escHtml(item.name) + '</span><span class="size">' + item.size_human + '</span>';
-            (function(p, s) {
-                node.onclick = function() { openFile(p, s); };
-            })(itemPath, item.size_human);
-            container.appendChild(node);
+            var absPath = rootDir ? rootDir + '/' + relPath : relPath;
+            var icon = item.is_md ? '📄' : '📃';
+            html += '<div class="tree-item file-item" data-nav="file" data-path="' +
+                    escAttr(absPath) + '" data-size="' +
+                    escAttr(item.size_human) + '">' +
+                    '<span class="icon">' + icon + '</span><span class="name">' +
+                    escHtml(item.name) + '</span><span class="size">' +
+                    escHtml(item.size_human) + '</span></div>';
         }
     }
+    container.innerHTML = html;
 }
 
 function escHtml(s) {
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function escAttr(s) {
+    return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// 文件树点击事件委托
+document.getElementById('file-tree').addEventListener('click', function(e) {
+    var el = e.target.closest('.tree-item');
+    if (!el) return;
+    var nav = el.dataset.nav;
+    if (nav === 'up') {
+        var parts = el.dataset.dir.split('/');
+        parts.pop();
+        loadTree(parts.join('/'));
+    } else if (nav === 'up-root') {
+        navigateToParent(el.dataset.dir);
+    } else if (nav === 'dir') {
+        loadTree(el.dataset.path);
+    } else if (nav === 'file') {
+        openFile(el.dataset.path, el.dataset.size);
+    }
+});
+
+async function navigateToParent(rootDir) {
+    rootDir = rootDir.replace(/\\/g, '/');
+    var isUnixAbs = rootDir.charAt(0) === '/' && rootDir.indexOf(':') === -1;
+    var parts = rootDir.split('/').filter(function(p) { return p.length > 0; });
+    if (parts.length === 0) return;
+    parts.pop();
+    var parentPath = parts.join('/');
+    if (!parentPath) return;
+    if (isUnixAbs) parentPath = '/' + parentPath;
+    if (hasNativeApi) {
+        await window.pywebview.api.change_root(parentPath);
+        await loadTree('');
+    } else {
+        var r = await fetch('/api/change_root', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({root: parentPath})
+        });
+        var data = await r.json();
+        if (data.error) { alert(data.error); return; }
+        document.getElementById('root-label').textContent = data.root;
+        renderTree(document.getElementById('file-tree'), data.children, '', data.root);
+        currentTreeDir = '';
+        highlightActiveDrive();
+    }
 }
 
 // ── 大纲生成 ──
@@ -907,7 +986,8 @@ function buildOutline() {
     });
 
     // 滚动监听：自动高亮当前可见标题
-    var observer = new IntersectionObserver(function(entries) {
+    if (outlineObserver) outlineObserver.disconnect();
+    outlineObserver = new IntersectionObserver(function(entries) {
         entries.forEach(function(entry) {
             if (entry.isIntersecting) {
                 var id = entry.target.id;
@@ -918,7 +998,7 @@ function buildOutline() {
         });
     }, { rootMargin: '-80px 0px -60% 0px' });
 
-    headings.forEach(function(h) { observer.observe(h); });
+    headings.forEach(function(h) { outlineObserver.observe(h); });
 }
 
 // ── 分隔条拖动 ──
@@ -947,9 +1027,7 @@ function buildOutline() {
 // ── 打开文件（支持相对路径或绝对路径） ──
 async function openFile(filePath, sizeHuman) {
     // 高亮树节点
-    document.querySelectorAll('.tree-item.active').forEach(function(el) { el.classList.remove('active'); });
-    var treeNode = document.querySelector('[data-path="' + filePath.replace(/\\/g,'\\\\') + '"]');
-    if (treeNode) treeNode.classList.add('active');
+    highlightTreeNode(filePath);
 
     currentFilePath = filePath;
     document.getElementById('breadcrumb').textContent = '📄 ' + filePath;
@@ -973,13 +1051,23 @@ async function openFile(filePath, sizeHuman) {
     document.getElementById('status-lines').textContent = sizeHuman || data.size || '';
     buildOutline();
 
-    // 如果根目录变了，重载文件树
+    // 如果根目录变了，重载文件树后用 API 返回的绝对路径重新高亮
     if (data.root_changed && hasNativeApi) {
         document.getElementById('root-label').textContent = data.new_root;
         await loadTree('');
+        highlightTreeNode(data.path);
     }
 
     document.getElementById('content').scrollTop = 0;
+}
+
+// 公共高亮辅助：在文件树中匹配 filePath 并高亮
+function highlightTreeNode(path) {
+    if (!path) return;
+    document.querySelectorAll('.tree-item.active').forEach(function(el) { el.classList.remove('active'); });
+    var norm = path.replace(/\\/g, '/');
+    var node = document.querySelector('#file-tree [data-path="' + norm.replace(/"/g, '\\"') + '"]');
+    if (node) node.classList.add('active');
 }
 
 // ── 📂 打开文件按钮 ──
@@ -997,6 +1085,7 @@ async function btnOpenFile() {
             document.getElementById('root-label').textContent = data.new_root;
             await loadTree('');
         }
+        highlightTreeNode(data.path);
         document.getElementById('content').scrollTop = 0;
     } else {
         // 浏览器模式：使用隐藏的 file input
@@ -1156,8 +1245,7 @@ document.addEventListener('keydown', function(e) {
 // ── 初始化 ──
 async function init() {
     applyTheme(getTheme());
-    await loadDrives();
-    await loadTree('');
+    await Promise.all([loadDrives(), loadTree('')]);
     var params = new URLSearchParams(window.location.search);
     var initialFile = params.get('open');
     if (initialFile) {
