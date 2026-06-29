@@ -21,6 +21,7 @@ import sys
 import os
 import re
 import json
+import socket
 import threading
 import time
 from pathlib import Path
@@ -311,13 +312,18 @@ def find_drives() -> list:
                 drives.append({"name": d.name.upper() + ":", "path": str(d)})
     if drives:
         return drives
-    # Native Windows: 尝试常见盘符
-    for letter in "CDEFGHIJKLMNOPQRSTUVWXYZAB":
-        p = Path(letter + ":\\")
-        if p.exists():
-            drives.append({"name": letter + ":", "path": str(p)})
-    if drives:
-        return drives
+    # Native Windows: GetLogicalDrives (bitmask, no disk I/O)
+    try:
+        import ctypes
+        mask = ctypes.windll.kernel32.GetLogicalDrives()
+        for i in range(26):
+            if mask & (1 << i):
+                letter = chr(65 + i)
+                drives.append({"name": letter + ":", "path": letter + ":\\"})
+        if drives:
+            return drives
+    except Exception:
+        pass
     # Linux/Mac: 根目录
     return [{"name": "/ (根目录)", "path": "/"}]
 
@@ -343,7 +349,8 @@ def _is_text_file(name: str) -> bool:
 def build_tree(dir_path: Path) -> list:
     items = []
     try:
-        entries = sorted(dir_path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+        with os.scandir(dir_path) as scan:
+            entries = sorted(scan, key=lambda e: (not e.is_dir(), e.name.lower()))
     except PermissionError:
         return items
     for entry in entries:
@@ -359,7 +366,7 @@ def build_tree(dir_path: Path) -> list:
             items.append({
                 "name": entry.name, "type": "file",
                 "size": sz, "size_human": _format_size(sz),
-                "is_md": entry.suffix.lower() == ".md",
+                "is_md": Path(entry.name).suffix.lower() == ".md",
             })
     return items
 
@@ -1371,6 +1378,17 @@ def start_server():
     HTTPServer((HOST, PORT), APIHandler).serve_forever()
 
 
+def _wait_for_server(host, port, timeout=2.0):
+    start = time.monotonic()
+    while time.monotonic() - start < timeout:
+        try:
+            s = socket.create_connection((host, port), timeout=0.05)
+            s.close()
+            return
+        except OSError:
+            time.sleep(0.01)
+
+
 # ═══════════════════════════════════════════════════════════
 #  主入口
 # ═══════════════════════════════════════════════════════════
@@ -1403,17 +1421,11 @@ def main():
     # 启动 HTTP 服务
     t = threading.Thread(target=start_server, daemon=True)
     t.start()
-    time.sleep(0.3)
+    _wait_for_server(HOST, PORT)
 
     url = f"http://{HOST}:{PORT}"
     if initial_file:
         url += f"?open={urllib.parse.quote(initial_file)}"
-
-    try:
-        import markdown  # noqa: F401
-        print("[OK] markdown library loaded (syntax highlighting)")
-    except ImportError:
-        print("[i]  built-in renderer mode")
 
     # 启动桌面窗口
     try:
